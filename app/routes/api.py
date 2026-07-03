@@ -3,9 +3,9 @@ from shapely.geometry import shape
 from app.extensions import db
 from app.models.community import Community
 from app.models.hazard_event import HazardEvent
-from app.services.orchestrator import AIOrchestrationService
-from app.services.africastalking_service import ATService
 from app.models.delivery import DeliveryLog
+from app.models.alert_job import AlertJob
+from app.tasks.alert_tasks import process_alert_task
 
 api_bp = Blueprint('api', __name__)
 
@@ -86,10 +86,8 @@ def ingest_hazard():
 def check_alerts():
     """
     Core Spatial Route: Finds all communities intersecting with active hazard 
-    events and generates custom AI SMS alerts for them using NVIDIA NIM.
+    events and creates AlertJobs.
     """
-    # Optimized spatial join using PostGIS ST_Intersects:
-    # This filters both the relationship and the active status completely in the database tier
     affected_records = db.session.query(
         Community, HazardEvent
     ).join(
@@ -99,42 +97,66 @@ def check_alerts():
         HazardEvent.is_active == True
     ).all()
     
-    alerts = []
-    orchestrator = AIOrchestrationService()
-    at_service = ATService()
+    jobs_created = 0
     
     for community, hazard in affected_records:
-        payload = orchestrator.process_community_alert(community, hazard)
+        job = AlertJob(
+            community_id=community.id,
+            hazard_id=hazard.id,
+            status='Queued'
+        )
+        db.session.add(job)
+        db.session.flush()
         
-        # Log delivery and dispatch AT
-        sms_id = None
-        voice_id = None
+        process_alert_task.delay(str(job.id))
+        jobs_created += 1
         
-        if payload.get("sms_alert"):
-            sms_id = at_service.send_sms(community.phone_number, payload["sms_alert"])
-            db.session.add(DeliveryLog(
-                community_id=community.id,
-                channel='SMS',
-                status='Sent' if sms_id else 'Failed',
-                message_id=sms_id
-            ))
-            
-        if payload.get("audio_url"):
-            voice_id = at_service.initiate_voice_call(community.phone_number)
-            db.session.add(DeliveryLog(
-                community_id=community.id,
-                channel='VOICE',
-                status='Initiated' if voice_id else 'Failed',
-                message_id=voice_id
-            ))
-            
-        db.session.commit()
-        
-        alerts.append(payload)
+    db.session.commit()
         
     return jsonify({
-        "total_alerts": len(alerts),
-        "alerts": alerts
+        "status": "Processing Started",
+        "jobs_created": jobs_created
+    }), 200
+
+@api_bp.route('/alerts/process', methods=['POST'])
+def process_alerts():
+    """
+    Alias for check-alerts trigger.
+    """
+    return check_alerts()
+
+@api_bp.route('/alerts/jobs', methods=['GET'])
+def get_alert_jobs():
+    """
+    Returns all alert jobs.
+    """
+    jobs = AlertJob.query.order_by(AlertJob.created_at.desc()).all()
+    return jsonify([{
+        "id": str(job.id),
+        "status": job.status,
+        "community_id": str(job.community_id),
+        "hazard_id": str(job.hazard_id),
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "completed_at": job.completed_at
+    } for job in jobs]), 200
+
+@api_bp.route('/alerts/jobs/<job_id>', methods=['GET'])
+def get_alert_job(job_id):
+    """
+    Returns a specific alert job.
+    """
+    job = AlertJob.query.get_or_404(job_id)
+    return jsonify({
+        "id": str(job.id),
+        "status": job.status,
+        "community_id": str(job.community_id),
+        "hazard_id": str(job.hazard_id),
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "completed_at": job.completed_at,
+        "processing_time": job.processing_time,
+        "error_message": job.error_message
     }), 200
 
 @api_bp.route('/seed', methods=['POST', 'GET'])

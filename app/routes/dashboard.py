@@ -5,6 +5,7 @@ from app.extensions import db
 from app.models.community import Community
 from app.models.hazard_event import HazardEvent
 from app.models.delivery import DeliveryLog
+from app.models.alert_job import AlertJob
 
 dashboard_bp = Blueprint('dashboard', __name__)
 
@@ -98,4 +99,41 @@ def get_map_data():
     return jsonify({
         "type": "FeatureCollection",
         "features": hazard_features + community_features
+    }), 200
+
+@dashboard_bp.route('/jobs', methods=['GET'])
+def get_jobs_stats():
+    """
+    Returns statistics about AlertJobs (Queued, Running, Completed, Failed).
+    """
+    queued = db.session.query(AlertJob).filter_by(status='Queued').count()
+    running = db.session.query(AlertJob).filter_by(status='Processing').count()
+    completed = db.session.query(AlertJob).filter_by(status='Completed').count()
+    failed = db.session.query(AlertJob).filter_by(status='Failed').count()
+    
+    total = queued + running + completed + failed
+    progress = 0
+    if total > 0:
+        progress = round(((completed + failed) / total) * 100, 1)
+        
+    avg_processing = db.session.query(func.avg(AlertJob.processing_time)).filter_by(status='Completed').scalar() or 0
+    avg_ai = db.session.query(func.avg(AlertJob.ai_latency)).filter_by(status='Completed').scalar() or 0
+    avg_trans = db.session.query(func.avg(AlertJob.translation_latency)).filter_by(status='Completed').scalar() or 0
+    avg_tts = db.session.query(func.avg(AlertJob.tts_latency)).filter_by(status='Completed').scalar() or 0
+    avg_sms = db.session.query(func.avg(AlertJob.sms_latency)).filter_by(status='Completed').scalar() or 0
+    avg_voice = db.session.query(func.avg(AlertJob.voice_latency)).filter_by(status='Completed').scalar() or 0
+    
+    return jsonify({
+        "queued": queued,
+        "running": running,
+        "completed": completed,
+        "failed": failed,
+        "progress_percentage": progress,
+        "avg_processing_time": round(avg_processing, 2),
+        "avg_ai_latency": round(avg_ai, 2),
+        "avg_translation_latency": round(avg_trans, 2),
+        "avg_tts_latency": round(avg_tts, 2),
+        "avg_sms_latency": round(avg_sms, 2),
+        "avg_voice_latency": round(avg_voice, 2),
+        "queue_size": queued
     }), 200

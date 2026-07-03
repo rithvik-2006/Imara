@@ -12,16 +12,25 @@ This document provides a detailed summary of the features and core logic impleme
 * **Alembic Migrations**: Fully configured database migration system that correctly handles PostGIS extensions and ignores internal spatial tables (e.g., `spatial_ref_sys`) to prevent migration conflicts.
 
 ## 3. Core Data Models
-* **`Community`**: Represents a farming community. Includes fields for UUID, name, preferred language, phone number, and a spatial `POINT` (SRID 4326) mapping their exact GPS location.
-* **`HazardEvent`**: Represents a crisis like a flood, drought, or locust swarm. Includes fields for hazard type, severity level, active status, and a spatial `POLYGON` (SRID 4326) that accurately maps the geographic boundary of the hazard.
-* **`DeliveryLog`**: Tracks dispatch attempts for SMS and Voice payloads, linking the message ID back to the community and tracking the real-time AT delivery status.
+* **`Community`**: Represents a farming community. Includes fields for UUID, name, preferred language, phone number, and a spatial `POINT` (SRID 4326). Extended with demographic fields (`primary_livelihood`, `population`, `risk_level`, etc.) for deep AI personalization.
+* **`HazardEvent`**: Represents a crisis like a flood, drought, or locust swarm. Includes fields for hazard type, severity level, active status, and a spatial `POLYGON` (SRID 4326).
+* **`DeliveryLog`**: Tracks dispatch attempts for SMS and Voice payloads, enhanced with advanced state-tracking (`pipeline_stage`, `attempt_number`, `failure_reason`).
+* **`AlertJob`**: A dedicated tracking model that monitors the state of background asynchronous processing tasks (`Queued`, `Processing`, `Completed`, `Failed`), keeping detailed metrics on individual AI/Translation/TTS latencies.
+* **`KnowledgeDocument`**: Stores structured metadata for humanitarian guidelines used in the RAG pipeline.
 
-## 4. AI Orchestration Engine (Phase 2)
-The AI alerting system has been decoupled into a modular, highly scalable orchestration pipeline:
-* **`ai_service.py`**: Generates structured, base advisories purely in English using Llama-3.1-70b-instruct via NVIDIA NIM. Returns strict JSON containing an SMS alert, voice script, recommended action, and urgency level.
+## 4. AI Orchestration & RAG Engine (Phase 2)
+The AI alerting system operates as a modular, highly scalable orchestration pipeline augmented with local context:
+* **Retrieval-Augmented Generation (RAG)**: Uses a local, lightning-fast FAISS vector store and `sentence-transformers` (`all-MiniLM-L6-v2`) to retrieve expert humanitarian guidelines (e.g., WHO/FAO manuals). These guidelines are directly injected into the LLM context to ensure accurate, expert-backed advisories.
+* **`ai_service.py`**: Generates structured, localized advisories purely in English using Llama-3.1-70b-instruct via NVIDIA NIM. It dynamically pulls in both RAG context and the specific `Community` demographic profile to personalize the output.
 * **`translation_service.py`**: A dedicated translation layer using NVIDIA NIM that contextually translates the generated English alerts into the farmer's preferred local language (e.g., Swahili, Somali).
 * **`tts_service.py`**: Converts the translated voice scripts into natural-sounding `.mp3` audio files using `gTTS`, stored locally in `app/static/audio/`.
-* **`orchestrator.py`**: The `AIOrchestrationService` ties all services together, handling the data flow, calculating per-step latencies, and constructing the final delivery payload containing texts and audio URLs.
+* **`orchestrator.py`**: The `AIOrchestrationService` ties all services together, handling the data flow, capturing per-step pipeline latencies, and constructing the final delivery payload.
+
+## 4.5. Event-Driven Background Processing
+To scale alerting across thousands of communities without blocking the API:
+* **Celery & Redis**: All heavy orchestration steps (LLM generation, translation, TTS, SMS/Voice dispatch) are offloaded to background workers.
+* **Automatic Retries & Resilience**: Exponential backoff policies protect the system against external API rate limits or failures.
+* **`alert_tasks.py`**: Contains modular worker tasks (`process_alert_task`, `dispatch_sms`, `dispatch_voice`) that execute sequentially, strictly updating the `AlertJob` database record in real-time.
 
 ## 5. RESTful API Endpoints
 The `api_bp` blueprint exposes three critical endpoints:
@@ -29,8 +38,10 @@ The `api_bp` blueprint exposes three critical endpoints:
   Accepts a JSON payload with standard coordinates (lat/lng) and registers a new farming community, converting the coordinates into a PostGIS-compatible WKT (Well-Known Text) Point.
 * **`POST /api/v1/ingest/hazard`**: 
   Ingests GeoJSON polygon payloads representing hazard zones (simulating external APIs like ICPAC) and saves the geometry to the database.
-* **`GET /api/v1/check-alerts`**: 
-  **The core spatial engine route.** It executes a highly-optimized database-tier spatial join using `ST_Intersects`. It instantly finds all `Communities` whose locations fall inside any active `HazardEvent` polygon, iterates through the affected communities, hits the `AIOrchestrationService` to generate translated text and audio alerts, dispatches the payloads via Africa's Talking, logs the deliveries, and returns a comprehensive payload.
+* **`POST /api/v1/alerts/process`**: 
+  **The core spatial engine route.** It executes a highly-optimized database-tier spatial join using `ST_Intersects` to instantly find all `Communities` whose locations fall inside any active `HazardEvent` polygon. It then *asynchronously queues* `AlertJob`s for every affected community and returns immediately.
+* **`GET /api/v1/alerts/jobs`**: Fetches the status of all current `AlertJob`s (Queued, Processing, Completed).
+* **`GET /api/v1/alerts/jobs/<job_id>`**: Fetches the fine-grained status and latencies of a specific background job.
 
 The `communication_bp` blueprint exposes three webhooks for Africa's Talking:
 * **`POST /api/v1/ussd`**: Serves the interactive USSD menu to farmers dialing in. It includes robust phone number parsing and dynamically checks for intersecting hazards.
@@ -45,7 +56,8 @@ The system leverages Africa's Talking to distribute alerts out to communities us
 
 ## 7. Next.js Admin Dashboard (Phase 4)
 A real-time command center built with Next.js 14 (App Router) and Tailwind CSS to visually monitor the entire orchestrator pipeline.
-* **`GET /api/v1/dashboard/stats`**: Aggregates live PostGIS and AT Delivery Log metrics, feeding the top row of the frontend dashboard (Total Communities, Active Hazards, Alerts Dispatched, Success Rate).
-* **`GET /api/v1/dashboard/map`**: Dynamically queries PostGIS using `ST_AsGeoJSON()` to return a unified FeatureCollection of all active Hazard polygons and Community points, automatically calculating safety status based on spatial intersections and delivery receipts.
+* **`GET /api/v1/dashboard/stats`**: Aggregates live PostGIS and AT Delivery Log metrics.
+* **`GET /api/v1/dashboard/jobs`**: Provides real-time aggregation of the background Celery job queue, displaying counts for active/failed jobs and computing the average pipeline latencies (AI, Translation, SMS, etc.).
+* **`GET /api/v1/dashboard/map`**: Dynamically queries PostGIS using `ST_AsGeoJSON()` to return a unified FeatureCollection of all active Hazard polygons and Community points.
 * **Interactive Map**: Uses `react-leaflet` to plot the hazard polygons (red/orange) and communities (safe/at-risk/alerted) based on the geospatial data.
-* **Live Pipeline Trigger**: The "Simulate Trigger" button allows admins to execute the PostGIS spatial join, trigger the NVIDIA NIM AI orchestration, and fire Africa's Talking dispatches directly from the UI, with a real-time activity feed tracking every step.
+* **Live Pipeline Trigger**: The "Simulate Trigger" button fires the async spatial join endpoint. The UI polls the jobs endpoint to show real-time progress bars and alerts as the backend background workers churn through the queue.

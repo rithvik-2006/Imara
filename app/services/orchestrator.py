@@ -24,10 +24,18 @@ class AIOrchestrationService:
         
         # 1. Base AI Generation (English)
         start_time = time.time()
+        community_context = {
+            "Primary Livelihood": community.primary_livelihood,
+            "Population": community.population,
+            "District": community.district,
+            "Risk Level": community.risk_level
+        }
+        
         base_payload = self.ai_service.generate_base_advisory(
             hazard_type=hazard.hazard_type,
             severity=hazard.severity,
-            community_name=community.name
+            community_name=community.name,
+            community_context=community_context
         )
         ai_latency = time.time() - start_time
         logger.info(f"AI Generation latency: {ai_latency:.2f}s")
@@ -64,7 +72,12 @@ class AIOrchestrationService:
             "recommended_action": action,
             "urgency": base_payload.get("urgency", "UNKNOWN"),
             "audio_url": audio_url,
-            "delivery_status": "pending"
+            "delivery_status": "pending",
+            "latencies": {
+                "ai_latency": ai_latency,
+                "translation_latency": trans_latency,
+                "tts_latency": tts_latency
+            }
         }
 
     def _build_fallback_payload(self, community, hazard) -> Dict[str, Any]:
@@ -78,5 +91,10 @@ class AIOrchestrationService:
             "recommended_action": "Stay alert and await further instructions.",
             "urgency": "HIGH",
             "audio_url": None,
-            "delivery_status": "failed_generation"
+            "delivery_status": "failed_generation",
+            "latencies": {
+                "ai_latency": 15.0, # Placeholder if it timed out
+                "translation_latency": 0.0,
+                "tts_latency": 0.0
+            }
         }
