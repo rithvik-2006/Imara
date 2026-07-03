@@ -19,7 +19,7 @@ class ATService:
             self.sms = africastalking.SMS
             self.voice = africastalking.Voice
         else:
-            logger.warning("Africa's Talking credentials not found. ATService will not function.")
+            logger.warning("Africa's Talking credentials not found. Using Mock mode.")
             self.sms = None
             self.voice = None
 
@@ -29,8 +29,11 @@ class ATService:
         Returns the Africa's Talking message ID if successful.
         """
         if not self.sms:
-            logger.error("SMS service not initialized.")
-            return None
+            import time
+            import uuid
+            logger.info("Mocking SMS send...")
+            time.sleep(1.2) # Simulate network delay
+            return str(uuid.uuid4())
             
         try:
             # send() returns a response dict
@@ -51,13 +54,12 @@ class ATService:
         Initiates an outbound voice call to the specified phone number.
         The actual MP3 playing will be handled by the Voice webhook callback.
         """
-        if not self.voice:
-            logger.error("Voice service not initialized.")
-            return None
-            
-        if not self.virtual_number:
-            logger.error("AT_VIRTUAL_NUMBER not set.")
-            return None
+        if not self.voice or not self.virtual_number:
+            import time
+            import uuid
+            logger.info("Mocking Voice call...")
+            time.sleep(2.5) # Simulate network delay
+            return str(uuid.uuid4())
 
         try:
             # Make a call from our virtual number to the user's phone

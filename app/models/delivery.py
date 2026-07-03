@@ -13,7 +13,14 @@ class DeliveryLog(db.Model):
     channel = db.Column(db.String(50), nullable=False) # 'SMS', 'VOICE', 'USSD'
     status = db.Column(db.String(50), nullable=False, default='Pending') # 'Pending', 'Sent', 'Delivered', 'Failed'
     message_id = db.Column(db.String(100), nullable=True) # Africa's Talking reference ID
+    
+    pipeline_stage = db.Column(db.String(50), nullable=True) # 'Queued', 'AI Generation', 'Translation', 'TTS Generation', 'SMS Dispatch', 'Voice Dispatch', 'Completed', 'Failed'
+    attempt_number = db.Column(db.Integer, default=1)
+    provider_response = db.Column(db.Text, nullable=True)
+    failure_reason = db.Column(db.Text, nullable=True)
+    
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     community = db.relationship('Community', backref=db.backref('deliveries', lazy=True))
 
